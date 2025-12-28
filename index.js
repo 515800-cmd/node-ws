@@ -112,21 +112,90 @@ function resolveHost(host) {
 
 // VLE-SS处理
 function handleVlessConnection(ws, msg) {
-  const [VERSION] = msg;
-  const id = msg.slice(1, 17);
-  if (!id.every((v, i) => v == parseInt(uuid.substr(i * 2, 2), 16))) return false;
-  
-  let i = msg.slice(17, 18).readUInt8() + 19;
-  const port = msg.slice(i, i += 2).readUInt16BE(0);
-  const ATYP = msg.slice(i, i += 1).readUInt8();
-  const host = ATYP == 1 ? msg.slice(i, i += 4).join('.') :
-    (ATYP == 2 ? new TextDecoder().decode(msg.slice(i + 1, i += 1 + msg.slice(i, i + 1).readUInt8())) :
-    (ATYP == 3 ? msg.slice(i, i += 16).reduce((s, b, i, a) => (i % 2 ? s.concat(a.slice(i - 1, i + 1)) : s), []).map(b => b.readUInt16BE(0).toString(16)).join(':') : ''));
+  const buffer = Buffer.from(msg);
+
+  // 最小长度为 19 字节（版本 + UUID + 长度字段）
+  if (buffer.length < 19) {
+    console.error('Buffer is too small to read the entire VLESS header.');
+    ws.close();
+    return false;
+  }
+
+  const VERSION = buffer[0];
+  if (VERSION !== 0) {
+    console.error(`Unsupported VLESS version: ${VERSION}`);
+    ws.close();
+    return false;
+  }
+
+  const id = buffer.slice(1, 17);
+  if (!id.every((v, i) => v == parseInt(uuid.substr(i * 2, 2), 16))) {
+    console.error('Invalid UUID in VLESS header.');
+    ws.close();
+    return false;
+  }
+
+  const optLength = buffer[17];
+  const nextOffset = 18 + optLength;
+
+  // 检查是否有足够的空间读取端口号和地址类型
+  if (nextOffset + 3 > buffer.length) {
+    console.error('Buffer is too small to read port and address type.');
+    ws.close();
+    return false;
+  }
+
+  const port = buffer.readUInt16BE(nextOffset);
+  const ATYP = buffer[nextOffset + 2];
+
+  let host = '';
+  let addrStart = nextOffset + 3;
+
+  switch (ATYP) {
+    case 1: // IPv4
+      if (addrStart + 4 > buffer.length) {
+        console.error('Buffer is too small to read IPv4 address.');
+        ws.close();
+        return false;
+      }
+      host = buffer.slice(addrStart, addrStart + 4).join('.');
+      addrStart += 4;
+      break;
+    case 2: // Domain Name
+      const domainLen = buffer[addrStart];
+      addrStart += 1;
+      if (addrStart + domainLen > buffer.length) {
+        console.error('Buffer is too small to read domain name.');
+        ws.close();
+        return false;
+      }
+      host = buffer.toString('ascii', addrStart, addrStart + domainLen);
+      addrStart += domainLen;
+      break;
+    case 3: // IPv6
+      if (addrStart + 16 > buffer.length) {
+        console.error('Buffer is too small to read IPv6 address.');
+        ws.close();
+        return false;
+      }
+      host = buffer.slice(addrStart, addrStart + 16).reduce((s, b, i, a) => 
+        (i % 2 ? s.concat(a.slice(i - 1, i + 1)) : s), [])
+        .map(b => b.readUInt16BE(0).toString(16)).join(':');
+      addrStart += 16;
+      break;
+    default:
+      console.error(`Unsupported address type: ${ATYP}`);
+      ws.close();
+      return false;
+  }
+
+  // 发送响应
   ws.send(new Uint8Array([VERSION, 0]));
+
   resolveHost(host)
     .then(resolvedIP => {
       net.connect({ host: resolvedIP, port }, function() {
-        this.write(msg.slice(i));
+        this.write(buffer.slice(addrStart));
         this.pipe(ws).pipe(this);
       }).on('error', err => {
         console.error('TCP connection error:', err);
@@ -137,7 +206,7 @@ function handleVlessConnection(ws, msg) {
       console.error('DNS resolution error:', error);
       ws.close();
     });
-  
+
   return true;
 }
 
@@ -387,5 +456,3 @@ httpServer.listen(PORT, () => {
   addAccessTask();
   console.log(`Server is running on port ${PORT}`);
 });
-
-
