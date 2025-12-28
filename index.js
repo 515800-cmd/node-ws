@@ -114,6 +114,8 @@ function resolveHost(host) {
 function handleVlessConnection(ws, msg) {
   const buffer = Buffer.from(msg);
 
+  console.log('Received buffer:', buffer.toString('hex'));
+
   // 最小长度为 19 字节（版本 + UUID + 长度字段）
   if (buffer.length < 19) {
     console.error('Buffer is too small to read the entire VLESS header.');
@@ -138,6 +140,9 @@ function handleVlessConnection(ws, msg) {
   const optLength = buffer[17];
   const nextOffset = 18 + optLength;
 
+  console.log('Options length:', optLength);
+  console.log('Next offset:', nextOffset);
+
   // 检查是否有足够的空间读取端口号和地址类型
   if (nextOffset + 3 > buffer.length) {
     console.error('Buffer is too small to read port and address type.');
@@ -147,6 +152,9 @@ function handleVlessConnection(ws, msg) {
 
   const port = buffer.readUInt16BE(nextOffset);
   const ATYP = buffer[nextOffset + 2];
+
+  console.log('Port:', port);
+  console.log('Address Type:', ATYP);
 
   let host = '';
   let addrStart = nextOffset + 3;
@@ -189,11 +197,14 @@ function handleVlessConnection(ws, msg) {
       return false;
   }
 
+  console.log('Resolved Host:', host);
+
   // 发送响应
   ws.send(new Uint8Array([VERSION, 0]));
 
   resolveHost(host)
     .then(resolvedIP => {
+      console.log('Resolved IP:', resolvedIP);
       net.connect({ host: resolvedIP, port }, function() {
         this.write(buffer.slice(addrStart));
         this.pipe(ws).pipe(this);
@@ -264,8 +275,12 @@ function handleTrojanConnection(ws, msg) {
       offset += 2;
     }
     
+    console.log('Resolved Host:', host);
+    console.log('Port:', port);
+
     resolveHost(host)
       .then(resolvedIP => {
+        console.log('Resolved IP:', resolvedIP);
         net.connect({ host: resolvedIP, port }, function() {
           if (offset < msg.length) {
             this.write(msg.slice(offset));
