@@ -7,22 +7,17 @@ const path = require('path');
 const crypto = require('crypto');
 const { Buffer } = require('buffer');
 const { exec, execSync } = require('child_process');
-const { WebSocketServer } = require('ws');
-
-// 正确设置 UUID 并使用引号括起来
+const { WebSocket, createWebSocketStream } = require('ws');
 const UUID = process.env.UUID || 'd9a36967-7314-4397-9baf-ff5cfd894e0f'; // 运行哪吒v1,在不同的平台需要改UUID,否则会被覆盖
-
-// 设置 NEZHA 相关的环境变量，并使用引号括起来
 const NEZHA_SERVER = process.env.NEZHA_SERVER || '';       // 哪吒v1填写形式：nz.abc.com:8008   哪吒v0填写形式：nz.abc.com
 const NEZHA_PORT = process.env.NEZHA_PORT || '';           // 哪吒v1没有此变量，v0的agent端口为{443,8443,2096,2087,2083,2053}其中之一时开启tls
-const NEZHA_KEY = process.env.NEZHA_KEY || '';             // v1的NZ_CLIENT_SECRET或v0的agent端口
-
+const NEZHA_KEY = process.env.NEZHA_KEY || '';             // v1的NZ_CLIENT_SECRET或v0的agent端口                
 const DOMAIN = process.env.DOMAIN || '1234.abc.com';       // 填写项目域名或已反代的域名，不带前缀，建议填已反代的域名
-const AUTO_ACCESS = process.env.AUTO_ACCESS === 'true' ? true : false;      // 是否开启自动访问保活,false为关闭,true为开启,需同时填写DOMAIN变量
+const AUTO_ACCESS = process.env.AUTO_ACCESS || false;      // 是否开启自动访问保活,false为关闭,true为开启,需同时填写DOMAIN变量
 const WSPATH = process.env.WSPATH || UUID.slice(0, 8);     // 节点路径，默认获取uuid前8位
 const SUB_PATH = process.env.SUB_PATH || '515800';            // 获取节点的订阅路径
 const NAME = process.env.NAME || '';                       // 节点名称
-const PORT = process.env.PORT || 7860;                     // http和ws服务端口
+const PORT = process.env.PORT || 3000;                     // http和ws服务端口
 
 let ISP = '';
 const GetISP = async () => {
@@ -51,8 +46,8 @@ const httpServer = http.createServer((req, res) => {
     return;
   } else if (req.url === `/${SUB_PATH}`) {
     const namePart = NAME ? `${NAME}-${ISP}` : ISP;
-    const vlessURL = `vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&fp=chrome&type=ws&host=${DOMAIN}&path=%2F${WSPATH}#${namePart}`;
-    const trojanURL = `trojan://${UUID}@${DOMAIN}:443?security=tls&sni=${DOMAIN}&fp=chrome&type=ws&host=${DOMAIN}&path=%2F${WSPATH}#${namePart}`;
+    const vlessURL = `vless://${UUID}@cdns.doon.eu.org:443?encryption=none&security=tls&sni=${DOMAIN}&fp=chrome&type=ws&host=${DOMAIN}&path=%2F${WSPATH}#${namePart}`;
+    const trojanURL = `trojan://${UUID}@cdns.doon.eu.org:443?security=tls&sni=${DOMAIN}&fp=chrome&type=ws&host=${DOMAIN}&path=%2F${WSPATH}#${namePart}`;
     const subscription = vlessURL + '\n' + trojanURL;
     const base64Content = Buffer.from(subscription).toString('base64');
     
@@ -64,10 +59,9 @@ const httpServer = http.createServer((req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ server: httpServer });
+const wss = new WebSocket.Server({ server: httpServer });
 const uuid = UUID.replace(/-/g, "");
 const DNS_SERVERS = ['8.8.4.4', '1.1.1.1'];
-
 // Custom DNS
 function resolveHost(host) {
   return new Promise((resolve, reject) => {
@@ -112,112 +106,32 @@ function resolveHost(host) {
 
 // VLE-SS处理
 function handleVlessConnection(ws, msg) {
-  const buffer = Buffer.from(msg);
-
-  console.log('Received buffer:', buffer.toString('hex'));
-
-  // 最小长度为 19 字节（版本 + UUID + 长度字段）
-  if (buffer.length < 19) {
-    console.error('Buffer is too small to read the entire VLESS header.');
-    ws.close();
-    return false;
-  }
-
-  const VERSION = buffer[0];
-  if (VERSION !== 0) {
-    console.error(`Unsupported VLESS version: ${VERSION}`);
-    ws.close();
-    return false;
-  }
-
-  const id = buffer.slice(1, 17);
-  if (!id.every((v, i) => v == parseInt(uuid.substr(i * 2, 2), 16))) {
-    console.error('Invalid UUID in VLESS header.');
-    ws.close();
-    return false;
-  }
-
-  const optLength = buffer[17];
-  const nextOffset = 18 + optLength;
-
-  console.log('Options length:', optLength);
-  console.log('Next offset:', nextOffset);
-
-  // 检查是否有足够的空间读取端口号和地址类型
-  if (nextOffset + 3 > buffer.length) {
-    console.error('Buffer is too small to read port and address type.');
-    ws.close();
-    return false;
-  }
-
-  const port = buffer.readUInt16BE(nextOffset);
-  const ATYP = buffer[nextOffset + 2];
-
-  console.log('Port:', port);
-  console.log('Address Type:', ATYP);
-
-  let host = '';
-  let addrStart = nextOffset + 3;
-
-  switch (ATYP) {
-    case 1: // IPv4
-      if (addrStart + 4 > buffer.length) {
-        console.error('Buffer is too small to read IPv4 address.');
-        ws.close();
-        return false;
-      }
-      host = buffer.slice(addrStart, addrStart + 4).join('.');
-      addrStart += 4;
-      break;
-    case 2: // Domain Name
-      const domainLen = buffer[addrStart];
-      addrStart += 1;
-      if (addrStart + domainLen > buffer.length) {
-        console.error('Buffer is too small to read domain name.');
-        ws.close();
-        return false;
-      }
-      host = buffer.toString('ascii', addrStart, addrStart + domainLen);
-      addrStart += domainLen;
-      break;
-    case 3: // IPv6
-      if (addrStart + 16 > buffer.length) {
-        console.error('Buffer is too small to read IPv6 address.');
-        ws.close();
-        return false;
-      }
-      host = buffer.slice(addrStart, addrStart + 16).reduce((s, b, i, a) => 
-        (i % 2 ? s.concat(a.slice(i - 1, i + 1)) : s), [])
-        .map(b => b.readUInt16BE(0).toString(16)).join(':');
-      addrStart += 16;
-      break;
-    default:
-      console.error(`Unsupported address type: ${ATYP}`);
-      ws.close();
-      return false;
-  }
-
-  console.log('Resolved Host:', host);
-
-  // 发送响应
+  const [VERSION] = msg;
+  const id = msg.slice(1, 17);
+  if (!id.every((v, i) => v == parseInt(uuid.substr(i * 2, 2), 16))) return false;
+  
+  let i = msg.slice(17, 18).readUInt8() + 19;
+  const port = msg.slice(i, i += 2).readUInt16BE(0);
+  const ATYP = msg.slice(i, i += 1).readUInt8();
+  const host = ATYP == 1 ? msg.slice(i, i += 4).join('.') :
+    (ATYP == 2 ? new TextDecoder().decode(msg.slice(i + 1, i += 1 + msg.slice(i, i + 1).readUInt8())) :
+    (ATYP == 3 ? msg.slice(i, i += 16).reduce((s, b, i, a) => (i % 2 ? s.concat(a.slice(i - 1, i + 1)) : s), []).map(b => b.readUInt16BE(0).toString(16)).join(':') : ''));
   ws.send(new Uint8Array([VERSION, 0]));
-
+  const duplex = createWebSocketStream(ws);
   resolveHost(host)
     .then(resolvedIP => {
-      console.log('Resolved IP:', resolvedIP);
       net.connect({ host: resolvedIP, port }, function() {
-        this.write(buffer.slice(addrStart));
-        this.pipe(ws).pipe(this);
-      }).on('error', err => {
-        console.error('TCP connection error:', err);
-        ws.close();
-      });
+        this.write(msg.slice(i));
+        duplex.on('error', () => {}).pipe(this).on('error', () => {}).pipe(duplex);
+      }).on('error', () => {});
     })
     .catch(error => {
-      console.error('DNS resolution error:', error);
-      ws.close();
+      net.connect({ host, port }, function() {
+        this.write(msg.slice(i));
+        duplex.on('error', () => {}).pipe(this).on('error', () => {}).pipe(duplex);
+      }).on('error', () => {});
     });
-
+  
   return true;
 }
 
@@ -275,34 +189,31 @@ function handleTrojanConnection(ws, msg) {
       offset += 2;
     }
     
-    console.log('Resolved Host:', host);
-    console.log('Port:', port);
+    const duplex = createWebSocketStream(ws);
 
     resolveHost(host)
       .then(resolvedIP => {
-        console.log('Resolved IP:', resolvedIP);
         net.connect({ host: resolvedIP, port }, function() {
           if (offset < msg.length) {
             this.write(msg.slice(offset));
           }
-          this.pipe(ws).pipe(this);
-        }).on('error', err => {
-          console.error('TCP connection error:', err);
-          ws.close();
-        });
+          duplex.on('error', () => {}).pipe(this).on('error', () => {}).pipe(duplex);
+        }).on('error', () => {});
       })
       .catch(error => {
-        console.error('DNS resolution error:', error);
-        ws.close();
+        net.connect({ host, port }, function() {
+          if (offset < msg.length) {
+            this.write(msg.slice(offset));
+          }
+          duplex.on('error', () => {}).pipe(this).on('error', () => {}).pipe(duplex);
+        }).on('error', () => {});
       });
     
     return true;
   } catch (error) {
-    console.error('Trojan handling error:', error);
     return false;
   }
 }
-
 // Ws 连接处理
 wss.on('connection', (ws, req) => {
   const url = req.url || '';
@@ -321,9 +232,7 @@ wss.on('connection', (ws, req) => {
     if (!handleTrojanConnection(ws, msg)) {
       ws.close();
     }
-  }).on('error', err => {
-    console.error('WebSocket error:', err);
-  });
+  }).on('error', () => {});
 });
 
 const getDownloadUrl = () => {
@@ -368,7 +277,6 @@ const downloadFile = async () => {
       writer.on('error', reject);
     });
   } catch (err) {
-    console.error('Error downloading file:', err);
     throw err;
   }
 };
@@ -439,7 +347,7 @@ async function addAccessTask() {
   if (!DOMAIN) {
     return;
   }
-  const fullURL = `https://${DOMAIN}`;
+  const fullURL = `https://${DOMAIN}/${SUB_PATH}`;
   try {
     const res = await axios.post("https://oooo.serv00.net/add-url", {
       url: fullURL
@@ -450,17 +358,13 @@ async function addAccessTask() {
     });
     console.log('Automatic Access Task added successfully');
   } catch (error) {
-    console.error('Error adding Task:', error.message);
+    // console.error('Error adding Task:', error.message);
   }
 }
 
 const delFiles = () => {
-  fs.unlink('npm', (err) => {
-    if (err) console.error('Error deleting npm:', err);
-  });
-  fs.unlink('config.yaml', (err) => {
-    if (err) console.error('Error deleting config.yaml:', err);
-  }); 
+  fs.unlink('npm', () => {});
+  fs.unlink('config.yaml', () => {}); 
 };
 
 httpServer.listen(PORT, () => {
