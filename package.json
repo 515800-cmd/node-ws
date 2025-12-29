@@ -1,17 +1,16 @@
 {
-  "name": "nodews",
+  "name": "vless-proxy",
   "version": "1.0.0",
-  "description": "Nodejs-server",
+  "description": "A VLESS proxy server implementation",
   "main": "index.js",
-  "private": false,
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "ws": "^8.14.2",
-    "axios": "^1.12.2"
+    "axios": "^1.6.0",
+    "ws": "^8.13.0"
   },
-  "engines": {
-    "node": ">=14"
-  }
+  "keywords": ["vless", "proxy", "websocket"],
+  "author": "Developer",
+  "license": "MIT"
 }
